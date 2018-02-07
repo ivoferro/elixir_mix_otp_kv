@@ -3,6 +3,6 @@ defmodule KVTest do
   doctest KV
 
   test "starts application" do
-    assert {:ok, pid} = KV.start(:normal, [])
+    assert {:error, {:already_started, pid}} = KV.start(:normal, [])
   end
 end

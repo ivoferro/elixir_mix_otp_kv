@@ -7,7 +7,8 @@ defmodule KV.Registry do
   Starts the registry.
   """
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, :ok, opts)
+    server = Keyword.fetch!(opts, :name)
+    GenServer.start_link(__MODULE__, server, opts)
   end
 
   @doc """
@@ -16,7 +17,10 @@ defmodule KV.Registry do
   Returns `{:ok, pid}` if the bucket exists, `:error` otherwise.
   """
   def lookup(server, name) do
-    GenServer.call(server, {:lookup, name})
+    case :ets.lookup(server, name) do
+      [{^name, pid}] -> {:ok, pid}
+      [] -> :error
+    end
   end
 
   @doc """
@@ -35,8 +39,8 @@ defmodule KV.Registry do
 
   ## Server callbacks
 
-  def init(:ok) do
-    names = %{}
+  def init(table) do
+    names = :ets.new(table, [:named_table, read_concurrency: true])
     refs = %{}
     {:ok, {names, refs}}
   end
@@ -46,33 +50,22 @@ defmodule KV.Registry do
   end
 
   def handle_call({:create, name}, _from, {names, refs}) do
-    if Map.has_key?(names, name) do
-      pid = Map.get(names, name)
-      {:reply, pid, {names, refs}}
-    else
-      {:ok, pid} = DynamicSupervisor.start_child(KV.BucketSupervisor, KV.Bucket)
-      ref = Process.monitor(pid)
-      refs = Map.put(refs, ref, name)
-      names = Map.put(names, name, pid)
-      {:reply, pid, {names, refs}}
-    end
-  end
+    case lookup(names, name) do
+      {:ok, pid} ->
+        {:reply, pid, {names, refs}}
 
-  def handle_cast({:create, name}, {names, refs}) do
-    if Map.has_key?(names, name) do
-      {:noreply, {names, refs}}
-    else
-      {:ok, pid} = DynamicSupervisor.start_child(KV.BucketSupervisor, KV.Bucket)
-      ref = Process.monitor(pid)
-      refs = Map.put(refs, ref, name)
-      names = Map.put(names, name, pid)
-      {:noreply, {names, refs}}
+      :error ->
+        {:ok, pid} = DynamicSupervisor.start_child(KV.BucketSupervisor, KV.Bucket)
+        ref = Process.monitor(pid)
+        refs = Map.put(refs, ref, name)
+        :ets.insert(names, {name, pid})
+        {:reply, pid, {names, refs}}
     end
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, {names, refs}) do
     {name, refs} = Map.pop(refs, ref)
-    names = Map.delete(names, name)
+    :ets.delete(names, name)
     {:noreply, {names, refs}}
   end
 
